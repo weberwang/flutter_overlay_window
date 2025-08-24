@@ -121,9 +121,18 @@ public class OverlayService extends Service implements View.OnTouchListener {
         Log.d("onStartCommand", "Service started");
         FlutterEngine engine = FlutterEngineCache.getInstance().get(OverlayConstants.CACHED_TAG);
         engine.getLifecycleChannel().appIsResumed();
-        flutterView = new FlutterView(getApplicationContext(), new FlutterTextureView(getApplicationContext()));
+        
+        // 创建FlutterTextureView并进行系统UI优化配置
+        FlutterTextureView flutterTextureView = new FlutterTextureView(getApplicationContext());
+        
+        // 创建FlutterView，使用优化的FlutterTextureView
+        flutterView = new FlutterView(getApplicationContext(), flutterTextureView);
         flutterView.attachToFlutterEngine(FlutterEngineCache.getInstance().get(OverlayConstants.CACHED_TAG));
-        flutterView.setFitsSystemWindows(true);
+        
+        // ✅ 关键修复：确保Flutter视图不受系统窗口限制，可以覆盖整个屏幕区域
+        flutterView.setFitsSystemWindows(false);
+        flutterTextureView.setFitsSystemWindows(false);
+        
         flutterView.setFocusable(true);
         flutterView.setFocusableInTouchMode(true);
         flutterView.setBackgroundColor(Color.TRANSPARENT);
@@ -147,7 +156,12 @@ public class OverlayService extends Service implements View.OnTouchListener {
         });
         windowManager = (WindowManager) getSystemService(WINDOW_SERVICE);
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.HONEYCOMB) {
+        // 获取包含系统UI的完整屏幕尺寸
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR1) {
+            DisplayMetrics realMetrics = new DisplayMetrics();
+            windowManager.getDefaultDisplay().getRealMetrics(realMetrics);
+            szWindow.set(realMetrics.widthPixels, realMetrics.heightPixels);
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.HONEYCOMB) {
             windowManager.getDefaultDisplay().getSize(szWindow);
         } else {
             DisplayMetrics displaymetrics = new DisplayMetrics();
@@ -156,24 +170,56 @@ public class OverlayService extends Service implements View.OnTouchListener {
             int h = displaymetrics.heightPixels;
             szWindow.set(w, h);
         }
-        int dx = startX == OverlayConstants.DEFAULT_XY ? 0 : startX;
-        int dy = startY == OverlayConstants.DEFAULT_XY ? -statusBarHeightPx() : startY;
+        int dx = /*startX == OverlayConstants.DEFAULT_XY ? 0 :*/ startX;
+        int dy = /*startY == OverlayConstants.DEFAULT_XY ? -statusBarHeightPx() :*/ startY;
         WindowManager.LayoutParams params = new WindowManager.LayoutParams(
                 WindowSetup.width == -1999 ? -1 : WindowSetup.width,
-                WindowSetup.height != -1999 ? WindowSetup.height : screenHeight(),
-                0,
-                -statusBarHeightPx(),
+                WindowSetup.height == -1999 ? -1 : WindowSetup.height,
+                0,  // x 坐标：从左边开始
+                0,  // y 坐标：从顶部开始（包括状态栏）
                 Build.VERSION.SDK_INT >= Build.VERSION_CODES.O ? WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY : WindowManager.LayoutParams.TYPE_PHONE,
                 WindowSetup.flag | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
                         | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
                         | WindowManager.LayoutParams.FLAG_LAYOUT_INSET_DECOR
-                        | WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED,
+                        | WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED
+                        | WindowManager.LayoutParams.FLAG_FULLSCREEN
+                        | WindowManager.LayoutParams.FLAG_LAYOUT_IN_OVERSCAN,
                 PixelFormat.TRANSLUCENT
         );
+        
+        // 确保覆盖底部安全区域（导航栏）和刘海屏
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            params.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
+        }
+        
+        // Android 10+ 支持手势导航，使用更激进的显示切口模式
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            // 对于全覆盖模式，使用 ALWAYS 模式确保覆盖所有区域
+            if (WindowSetup.width == -1999 && WindowSetup.height == -1999) {
+                params.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS;
+            }
+        }
+        
+        // 设置窗口宽度和高度为完整屏幕尺寸
+        if (WindowSetup.width == -1999) {
+            params.width = szWindow.x;  // 使用真实屏幕宽度
+        }
+        if (WindowSetup.height == -1999) {
+            params.height = szWindow.y;  // 使用真实屏幕高度，包括所有系统UI区域
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && WindowSetup.flag == clickableFlag) {
             params.alpha = MAXIMUM_OPACITY_ALLOWED_FOR_S_AND_HIGHER;
         }
-        params.gravity = WindowSetup.gravity;
+        
+        // 对于全覆盖模式，使用特殊的重力设置
+        if (WindowSetup.width == -1999 && WindowSetup.height == -1999) {
+            params.gravity = Gravity.TOP | Gravity.LEFT;  // 强制从左上角开始
+            params.x = 0;
+            params.y = 0;
+        } else {
+            params.gravity = WindowSetup.gravity;
+        }
+        
         flutterView.setOnTouchListener(this);
         windowManager.addView(flutterView, params);
         moveOverlay(dx, dy, null);
@@ -186,10 +232,9 @@ public class OverlayService extends Service implements View.OnTouchListener {
         Display display = windowManager.getDefaultDisplay();
         DisplayMetrics dm = new DisplayMetrics();
         display.getRealMetrics(dm);
-        return inPortrait() ?
-                dm.heightPixels + statusBarHeightPx() + navigationBarHeightPx()
-                :
-                dm.heightPixels + statusBarHeightPx();
+        // getRealMetrics() already returns the real size including decorations
+        // For overlay windows, we typically want the full screen height
+        return dm.heightPixels;
     }
 
     private int statusBarHeightPx() {
@@ -225,9 +270,12 @@ public class OverlayService extends Service implements View.OnTouchListener {
         if (windowManager != null) {
             WindowSetup.setFlag(flag);
             WindowManager.LayoutParams params = (WindowManager.LayoutParams) flutterView.getLayoutParams();
-            params.flags = WindowSetup.flag | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS |
-                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN |
-                    WindowManager.LayoutParams.FLAG_LAYOUT_INSET_DECOR | WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED;
+            params.flags = WindowSetup.flag | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
+                    | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
+                    | WindowManager.LayoutParams.FLAG_LAYOUT_INSET_DECOR 
+                    | WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED
+                    | WindowManager.LayoutParams.FLAG_FULLSCREEN
+                    | WindowManager.LayoutParams.FLAG_LAYOUT_IN_OVERSCAN;
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && WindowSetup.flag == clickableFlag) {
                 params.alpha = MAXIMUM_OPACITY_ALLOWED_FOR_S_AND_HIGHER;
             } else {
@@ -244,7 +292,7 @@ public class OverlayService extends Service implements View.OnTouchListener {
         if (windowManager != null) {
             WindowManager.LayoutParams params = (WindowManager.LayoutParams) flutterView.getLayoutParams();
             params.width = (width == -1999 || width == -1) ? -1 : dpToPx(width);
-            params.height = (height != 1999 || height != -1) ? dpToPx(height) : height;
+            params.height = (height == -1999 || height == -1) ? -1 : dpToPx(height);
             WindowSetup.enableDrag = enableDrag;
             windowManager.updateViewLayout(flutterView, params);
             result.success(true);
