@@ -125,13 +125,32 @@ public class OverlayService extends Service implements View.OnTouchListener {
         // 创建FlutterTextureView并进行系统UI优化配置
         FlutterTextureView flutterTextureView = new FlutterTextureView(getApplicationContext());
         
+        // ✅ 根据Flutter官方文档，确保FlutterTextureView不受系统窗口约束
+        flutterTextureView.setFitsSystemWindows(false);
+        
         // 创建FlutterView，使用优化的FlutterTextureView
         flutterView = new FlutterView(getApplicationContext(), flutterTextureView);
         flutterView.attachToFlutterEngine(FlutterEngineCache.getInstance().get(OverlayConstants.CACHED_TAG));
         
         // ✅ 关键修复：确保Flutter视图不受系统窗口限制，可以覆盖整个屏幕区域
         flutterView.setFitsSystemWindows(false);
-        flutterTextureView.setFitsSystemWindows(false);
+        
+        // ✅ 应用系统UI可见性标志以确保完全覆盖底部区域
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN) {
+            int uiFlags = View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                    | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                    | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION;
+            
+            // 对于全覆盖模式，应用更激进的UI标志
+            if (WindowSetup.width == -1999 && WindowSetup.height == -1999) {
+                uiFlags |= View.SYSTEM_UI_FLAG_FULLSCREEN
+                        | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                        | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY;
+            }
+            
+            flutterView.setSystemUiVisibility(uiFlags);
+            flutterTextureView.setSystemUiVisibility(uiFlags);
+        }
         
         flutterView.setFocusable(true);
         flutterView.setFocusableInTouchMode(true);
@@ -175,15 +194,15 @@ public class OverlayService extends Service implements View.OnTouchListener {
         WindowManager.LayoutParams params = new WindowManager.LayoutParams(
                 WindowSetup.width == -1999 ? -1 : WindowSetup.width,
                 WindowSetup.height == -1999 ? -1 : WindowSetup.height,
-                0,  // x 坐标：从左边开始
-                0,  // y 坐标：从顶部开始（包括状态栏）
+                0, // x 坐标：从左边开始
+                0, // y 坐标：从顶部开始（包括状态栏）
                 Build.VERSION.SDK_INT >= Build.VERSION_CODES.O ? WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY : WindowManager.LayoutParams.TYPE_PHONE,
                 WindowSetup.flag | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
-                        | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
-                        | WindowManager.LayoutParams.FLAG_LAYOUT_INSET_DECOR
-                        | WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED
-                        | WindowManager.LayoutParams.FLAG_FULLSCREEN
-                        | WindowManager.LayoutParams.FLAG_LAYOUT_IN_OVERSCAN,
+                | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
+                | WindowManager.LayoutParams.FLAG_LAYOUT_INSET_DECOR
+                | WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED
+                | WindowManager.LayoutParams.FLAG_FULLSCREEN
+                | WindowManager.LayoutParams.FLAG_LAYOUT_IN_OVERSCAN,
                 PixelFormat.TRANSLUCENT
         );
         
@@ -219,7 +238,7 @@ public class OverlayService extends Service implements View.OnTouchListener {
         } else {
             params.gravity = WindowSetup.gravity;
         }
-        
+
         flutterView.setOnTouchListener(this);
         windowManager.addView(flutterView, params);
         moveOverlay(dx, dy, null);
